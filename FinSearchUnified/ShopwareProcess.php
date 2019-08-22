@@ -8,6 +8,7 @@ use Enlight_Exception;
 use Exception;
 use FINDOLOGIC\Export\Exporter;
 use FinSearchUnified\BusinessLogic\FindologicArticleFactory;
+use Monolog\Logger;
 use Shopware\Bundle\SearchBundle\Criteria;
 use Shopware\Bundle\SearchBundle\ProductNumberSearchInterface;
 use Shopware\Bundle\StoreFrontBundle\Service\ContextServiceInterface;
@@ -62,6 +63,9 @@ class ShopwareProcess
      */
     protected $searchService;
 
+    /** @var Logger */
+    protected $logger;
+
     public function __construct(
         Zend_Cache_Core $cache,
         RepositoryInterface $repository,
@@ -72,6 +76,7 @@ class ShopwareProcess
         $this->productStreamRepository = $repository;
         $this->contextService = $contextService;
         $this->searchService = $productNumberSearch;
+        $this->logger = Shopware()->Container()->get('pluginlogger');
     }
 
     /**
@@ -121,6 +126,7 @@ class ShopwareProcess
         $allUserGroups = $this->customerRepository->getCustomerGroupsQuery()->getResult();
 
         $findologicArticleFactory = Shopware()->Container()->get('fin_search_unified.article_model_factory');
+        $productsWithoutProductStream = ' ';
 
         /** @var Article $article */
         foreach ($allArticles as $article) {
@@ -162,9 +168,20 @@ class ShopwareProcess
                 $baseCategory
             );
 
+            if (!$findologicArticle->hasProductStream) {
+                $productsWithoutProductStream .= sprintf('%d, ', $article->getId());
+            }
+
             if ($findologicArticle->shouldBeExported) {
                 $findologicArticles[] = $findologicArticle->getXmlRepresentation();
             }
+        }
+
+        if (trim($productsWithoutProductStream) !== '') {
+            $this->logger->error(sprintf(
+                'export: Products without Product Stream => (%s)',
+                $productsWithoutProductStream
+            ), ['ShopwareProcess::getAllProductsAsXmlArray']);
         }
 
         $response->items = $findologicArticles;
@@ -251,13 +268,31 @@ class ShopwareProcess
     protected function warmUpCache()
     {
         $id = sprintf('%s_%s', Constants::CACHE_ID_PRODUCT_STREAMS, $this->shopKey);
+        $articles = $this->parseProductStreams($this->shop->getCategory()->getChildren());
 
         $this->cache->save(
-            $this->parseProductStreams($this->shop->getCategory()->getChildren()),
+            $articles,
             $id,
             ['FINDOLOGIC'],
             Constants::CACHE_LIFETIME_PRODUCT_STREAMS
         );
+
+        /**
+         * @var int $articleId
+         * @var Category[] $categories
+         */
+        foreach ($articles as $articleId => $categories) {
+            $categoriesString = ' ';
+            foreach ($categories as $category) {
+                $categoriesString .= sprintf('%s, ', $category->getName());
+            }
+
+            $this->logger->error(sprintf(
+                'warmUpCache: Product with ID %d has categories => (%s)',
+                $articleId,
+                $categoriesString
+            ), ['ShopwareProcess::warmUpCache']);
+        }
     }
 
     /**
@@ -294,15 +329,23 @@ class ShopwareProcess
 
             $this->productStreamRepository->prepareCriteria($criteria, $category->getStream()->getId());
 
+            $productIdString = ' ';
             do {
                 $result = $this->searchService->search($criteria, $this->contextService->getShopContext());
 
                 foreach ($result->getProducts() as $product) {
                     $articles[$product->getId()][] = $category;
+                    $productIdString .= sprintf('%d, ', $product->getId());
                 }
 
                 $criteria->offset($criteria->getOffset() + $criteria->getLimit());
             } while ($criteria->getOffset() < $result->getTotalCount());
+
+            $this->logger->error(sprintf(
+                'warmUpCache: Product Stream "%s" has products => (%s)',
+                $category->getStream()->getName(),
+                $productIdString
+            ), ['ShopwareProcess::parseProductStreams']);
         }
 
         return $articles;

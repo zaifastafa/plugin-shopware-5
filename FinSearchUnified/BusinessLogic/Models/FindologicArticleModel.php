@@ -122,6 +122,9 @@ class FindologicArticleModel
      */
     protected $logger;
 
+    /** @var string */
+    public $hasProductStream = false;
+
     /**
      * FindologicArticleModel constructor.
      *
@@ -483,9 +486,18 @@ class FindologicArticleModel
         $productStreams = $this->cache->load($id);
 
         if ($productStreams != false && array_key_exists($this->baseArticle->getId(), $productStreams)) {
+            $categoriesString = ' ';
+            $this->hasProductStream = true;
             foreach ($productStreams[$this->baseArticle->getId()] as $cat) {
                 $categories[] = $cat;
+                $categoriesString .= sprintf('%s, ', $cat->getName());
             }
+
+            $this->logger->error(sprintf(
+                'export: Article with ID %d has categories => (%s)',
+                $this->baseArticle->getId(),
+                $categoriesString
+            ), ['FindologicArticleModel::setAttributes']);
         }
 
         /** @var Category $category */
