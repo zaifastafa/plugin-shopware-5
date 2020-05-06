@@ -4,6 +4,7 @@ namespace FinSearchUnified\Tests\Subscriber;
 
 use Enlight_Controller_Action;
 use Enlight_Controller_Request_RequestHttp as RequestHttp;
+use Enlight_Controller_Response_ResponseHttp;
 use Enlight_Event_EventArgs;
 use Enlight_Hook_HookArgs;
 use PHPUnit\Framework\Assert;
@@ -131,9 +132,9 @@ class FrontendTest extends SubscriberTestCase
                     'attrib' => ['vendor' => ['Shopware']],
                 ],
                 'expectedUrl' => '/search?' . http_build_query([
-                    'sSearch' => 'test',
-                    'attrib' => ['vendor' => ['Shopware']],
-                ], null, '&', PHP_QUERY_RFC3986)
+                        'sSearch' => 'test',
+                        'attrib' => ['vendor' => ['Shopware']],
+                    ], null, '&', PHP_QUERY_RFC3986)
             ],
             'Query with filter and special characters' => [
                 'params' => [
@@ -143,9 +144,9 @@ class FrontendTest extends SubscriberTestCase
                     'attrib' => ['vendor' => ['Shopware / Österreich#%']],
                 ],
                 'expectedUrl' => '/search?' . http_build_query([
-                    'sSearch' => 'test',
-                    'attrib' => ['vendor' => ['Shopware / Österreich#%']],
-                ], null, '&', PHP_QUERY_RFC3986)
+                        'sSearch' => 'test',
+                        'attrib' => ['vendor' => ['Shopware / Österreich#%']],
+                    ], null, '&', PHP_QUERY_RFC3986)
             ],
             'Lowercase controller' => [
                 'params' => [
@@ -200,20 +201,9 @@ class FrontendTest extends SubscriberTestCase
             $request->setParam('sCategory', $sCategory);
         }
 
-        // Create mocked Subject to be passed in mocked args
-        $subject = $this->getMockBuilder(Enlight_Controller_Action::class)
-            ->setMethods(['Request'])
-            ->disableOriginalConstructor()
-            ->getMock();
-        $subject->method('Request')
-            ->willReturn($request);
-
         // Create mocked args for getting Subject and Request
-        $args = $this->getMockBuilder(Enlight_Event_EventArgs::class)
-            ->setMethods(['getSubject', 'getRequest'])
-            ->getMock();
-        $args->method('getSubject')->willReturn($subject);
-        $args->method('getRequest')->willReturn($request);
+        $args = $this->createMock(Enlight_Event_EventArgs::class);
+        $args->method('get')->with('request')->willReturn($request);
 
         Shopware()->Session()->isCategoryPage = $isCategory;
         Shopware()->Session()->isSearchPage = $isSearch;
@@ -255,7 +245,7 @@ class FrontendTest extends SubscriberTestCase
 
         $subject = $this->getControllerInstance(Shopware_Controllers_Widgets_Listing::class, $request);
 
-        $args = new Enlight_Event_EventArgs(['subject' => $subject]);
+        $args = new Enlight_Event_EventArgs(['subject' => $subject, 'request' => $request]);
 
         Shopware()->Session()->isCategoryPage = $isCategory;
         Shopware()->Session()->isSearchPage = $isSearch;
@@ -270,12 +260,12 @@ class FrontendTest extends SubscriberTestCase
         $this->assertEquals(
             $isCategory,
             $isCategoryPage,
-            "Expected isCategoryPage to remain unchanged after listingCount method call"
+            'Expected isCategoryPage to remain unchanged after listingCount method call'
         );
         $this->assertEquals(
             $isSearch,
             $isSearchPage,
-            "Expected isSearchPage to remain unchanged after listingCount method call"
+            'Expected isSearchPage to remain unchanged after listingCount method call'
         );
     }
 
@@ -339,31 +329,36 @@ class FrontendTest extends SubscriberTestCase
 
     public function testLegacyUrls(array $params, $expectedUrl)
     {
+        $queryParams = $params;
+        unset($queryParams['controller'], $queryParams['action']);
+
         // Create Request object to be passed in the mocked Subject
         $request = new RequestHttp();
         $request->setControllerName($params['controller'])
             ->setActionName($params['action'])
-            ->setQuery($params)
+            ->setQuery($queryParams)
             ->setBaseUrl(rtrim(Shopware()->Shop()->getHost(), ' / '));
 
-        // Create mocked Subject to be passed in mocked args
-        $subject = $this->getMockBuilder(Enlight_Controller_Action::class)
-            ->setMethods(['Request', 'redirect'])
-            ->disableOriginalConstructor()
-            ->getMock();
-        $subject->method('Request')
-            ->willReturn($request);
-
-        if ($expectedUrl === null) {
-            $subject->expects($this->never())->method('redirect');
-        } else {
-            $subject->expects($this->once())->method('redirect')->with($expectedUrl, ['code' => 301]);
+        // Set request URI for legacy search
+        if ($params['controller'] === 'FinSearchAPI') {
+            $request->setRequestUri('/FinSearchAPI/search');
         }
 
-        $args = new Enlight_Event_EventArgs(['subject' => $subject]);
+        $subject = $this->getMockBuilder(Enlight_Controller_Action::class)
+            ->disableOriginalConstructor()
+            ->getMock();
+
+        $response = $this->createMock(Enlight_Controller_Response_ResponseHttp::class);
+        if ($expectedUrl === null) {
+            $response->expects($this->never())->method('setRedirect');
+        } else {
+            $response->expects($this->once())->method('setRedirect')->with($expectedUrl, 301);
+        }
+
+        $args = new Enlight_Event_EventArgs(['subject' => $subject, 'request' => $request, 'response' => $response]);
 
         $frontend = Shopware()->Container()->get('fin_search_unified.subscriber.frontend');
-        $frontend->onFrontendPreDispatch($args);
+        $frontend->onRouteStartup($args);
     }
 
     /**
@@ -382,7 +377,7 @@ class FrontendTest extends SubscriberTestCase
 
         $subject = $this->getControllerInstance(Shopware_Controllers_Frontend_Media::class, $request);
 
-        $args = new Enlight_Event_EventArgs(['subject' => $subject]);
+        $args = new Enlight_Event_EventArgs(['subject' => $subject, 'request' => $request]);
 
         $frontend = Shopware()->Container()->get('fin_search_unified.subscriber.frontend');
         $frontend->onFrontendPreDispatch($args);

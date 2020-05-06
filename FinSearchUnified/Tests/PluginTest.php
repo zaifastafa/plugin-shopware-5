@@ -3,29 +3,32 @@
 namespace FinSearchUnified\Tests;
 
 use Exception;
+use FINDOLOGIC\Export\Helpers\EmptyValueNotAllowedException;
+use FinSearchUnified\BusinessLogic\FindologicArticleFactory;
 use FinSearchUnified\finSearchUnified as Plugin;
 use FinSearchUnified\Helper\StaticHelper;
 use FinSearchUnified\ShopwareProcess;
 use FinSearchUnified\Tests\Helper\Utility;
 use Shopware\Components\Api\Manager;
-use Shopware\Components\Api\Resource\Article;
+use Shopware\Models\Article\Article;
 use SimpleXMLElement;
 
 class PluginTest extends TestCase
 {
     protected static $ensureLoadedPlugins = [
         'FinSearchUnified' => [
-            'ShopKey' => '0000000000000000ZZZZZZZZZZZZZZZZ'
-        ],
+            'ShopKey' => 'ABCDABCDABCDABCDABCDABCDABCDABCD'
+        ]
     ];
 
-    /** @var Manager */
-    private $manager;
-
-    protected function setUp()
+    protected function tearDown()
     {
-        parent::setUp();
-        $this->manager = new Manager();
+        parent::tearDown();
+
+        Shopware()->Container()->reset('fin_search_unified.article_model_factory');
+        Shopware()->Container()->load('fin_search_unified.article_model_factory');
+
+        Utility::sResetArticles();
     }
 
     public function testCanCreateInstance()
@@ -37,7 +40,7 @@ class PluginTest extends TestCase
 
     public function testCalculateGroupkey()
     {
-        $shopkey = '0000000000000000ZZZZZZZZZZZZZZZZ';
+        $shopkey = 'ABCDABCDABCDABCDABCDABCDABCDABCD';
         $usergroup = 'at_rated';
         $hash = StaticHelper::calculateUsergroupHash($shopkey, $usergroup);
         $decrypted = StaticHelper::decryptUsergroupHash($shopkey, $hash);
@@ -53,51 +56,86 @@ class PluginTest extends TestCase
     {
         return [
             '2 active articles' => [
-                [true, true],
-                2,
-                'Two articles were expected but %d were returned'
+                'articlesActiveStatus' => [true, true],
+                'expectedCount' => 2,
+                'errorMessage' => 'Two articles were expected but %d were returned'
             ],
             '1 active and 1 inactive article' => [
-                [true, false],
-                1,
-                'Only one article was expected but %d were returned'
+                'articlesActiveStatus' => [true, false],
+                'expectedCount' => 1,
+                'errorMessage' => 'Only one article was expected but %d were returned'
             ],
             '2 inactive articles' => [
-                [false, false],
-                0,
-                'No articles were expected but %d were returned'
+                'articlesActiveStatus' => [false, false],
+                'expectedCount' => 0,
+                'errorMessage' => 'No articles were expected but %d were returned'
             ],
         ];
     }
 
     /**
-     * Method to run the export test cases using the data provider
-     *
      * @dataProvider articleProvider
      *
-     * @param array $isActive
-     * @param int $expected
+     * @param array $articlesActiveStatus
+     * @param int $expectedCount
      * @param string $errorMessage
      */
-    public function testArticleExport($isActive, $expected, $errorMessage)
+    public function testArticleExport($articlesActiveStatus, $expectedCount, $errorMessage)
     {
         // Create articles with the provided data to test the export functionality
-        for ($i = 0; $i < count($isActive); $i++) {
-            $this->createTestProduct($i, $isActive[$i]);
+        foreach ($articlesActiveStatus as $i => $iValue) {
+            $this->createTestProduct($i, $iValue);
         }
         $actual = $this->runExportAndReturnCount();
-        $this->assertEquals($expected, $actual, sprintf($errorMessage, $actual));
+        $this->assertEquals($expectedCount, $actual, sprintf($errorMessage, $actual));
+    }
+
+    public function crossSellingCategoryProvider()
+    {
+        return [
+            'No cross-sell categories configured' => [
+                'crossSellingCategories' => [],
+                'expectedCount' => 1
+            ],
+            'Article does not exist in cross-sell category configured' => [
+                'crossSellingCategories' => [5],
+                'expectedCount' => 1
+            ],
+            'Article exists in one of the cross-sell categories configured' => [
+                'crossSellingCategories' => [8, 9],
+                'expectedCount' => 0
+            ],
+            'Article exists in all of cross-sell categories configured' => [
+                'crossSellingCategories' => [8, 9, 10],
+                'expectedCount' => 0
+            ],
+        ];
     }
 
     /**
-     * Method to create test products for the export
+     * @dataProvider crossSellingCategoryProvider
      *
-     * @param int $number
-     * @param bool $isActive
-     *
-     * @return \Shopware\Models\Article\Article|null
+     * @param int[] $crossSellingCategories
+     * @param int $expectedCount
      */
-    private function createTestProduct($number, $isActive)
+    public function testArticleExportWithCrossSellingCategories($crossSellingCategories, $expectedCount)
+    {
+        $assignedCategories = [8, 9, 10];
+        $this->createTestProduct('SOMENUMBER', true, $assignedCategories);
+        Shopware()->Config()->CrossSellingCategories = $crossSellingCategories;
+        $exportedCount = $this->runExportAndReturnCount();
+        unset(Shopware()->Config()->CrossSellingCategories);
+        $this->assertSame($expectedCount, $exportedCount);
+    }
+
+    /**
+     * @param int|string $number
+     * @param bool $isActive
+     * @param array $categories
+     *
+     * @return Article|null
+     */
+    private function createTestProduct($number, $isActive, $categories = [])
     {
         $testArticle = [
             'name' => 'FindologicArticle' . $number,
@@ -108,8 +146,8 @@ class PluginTest extends TestCase
                 ['id' => 5],
             ],
             'images' => [
-                ['link' => 'https://via.placeholder.com/300/F00/fff.png'],
-                ['link' => 'https://via.placeholder.com/300/09f/000.png'],
+                ['link' => 'https://via.placeholder.com/100/F00/fff.png'],
+                ['link' => 'https://via.placeholder.com/100/09f/000.png'],
             ],
             'mainDetail' => [
                 'number' => 'FINDOLOGIC' . $number,
@@ -124,15 +162,38 @@ class PluginTest extends TestCase
             ],
         ];
 
-        try {
-            /** @var Article $resource */
-            $resource = $this->manager->getResource('Article');
-            $article = $resource->create($testArticle);
-
-            return $article;
-        } catch (Exception $e) {
-            echo sprintf("Exception: %s", $e->getMessage());
+        if (!empty($categories)) {
+            $assignedCategories = [];
+            foreach ($categories as $category) {
+                $assignedCategories[] = ['id' => $category];
+            }
+            $testArticle['categories'] = $assignedCategories;
         }
+
+        try {
+            $resource = Manager::getResource('Article');
+
+            return $resource->create($testArticle);
+        } catch (Exception $e) {
+            echo sprintf('Exception: %s', $e->getMessage());
+        }
+
+        return null;
+    }
+
+    public function testEmptyValueNotAllowedExceptionIsThrownInExport()
+    {
+        // Create articles with the provided data to test the export functionality
+        $this->createTestProduct('SOMENUMBER', true);
+        $findologicArticleFactoryMock = $this->createMock(FindologicArticleFactory::class);
+        $findologicArticleFactoryMock->expects($this->once())->method('create')->willThrowException(
+            new EmptyValueNotAllowedException()
+        );
+
+        Shopware()->Container()->set('fin_search_unified.article_model_factory', $findologicArticleFactoryMock);
+
+        $exported = $this->runExportAndReturnCount();
+        $this->assertSame(0, $exported);
     }
 
     /**
@@ -144,30 +205,19 @@ class PluginTest extends TestCase
     private function runExportAndReturnCount()
     {
         try {
-            $shopKey = '0000000000000000ZZZZZZZZZZZZZZZZ';
-            /** @var ShopwareProcess $blController */
-            $blController = Shopware()->Container()->get('fin_search_unified.shopware_process');
-            $blController->setShopKey($shopKey);
-            $xmlDocument = $blController->getFindologicXml();
+            /** @var ShopwareProcess $shopwareProcess */
+            $shopwareProcess = Shopware()->Container()->get('fin_search_unified.shopware_process');
+            $shopwareProcess->setShopKey('ABCDABCDABCDABCDABCDABCDABCDABCD');
+            $xmlDocument = $shopwareProcess->getFindologicXml();
 
             // Parse the xml and return the count of the products exported
             $xml = new SimpleXMLElement($xmlDocument);
 
             return (int)$xml->items->attributes()->count;
         } catch (Exception $e) {
-            echo sprintf("Exception: %s", $e->getMessage());
+            echo sprintf('Exception: %s', $e->getMessage());
         }
 
         return 0;
-    }
-
-    /**
-     * Reset articles data after each test
-     */
-    protected function tearDown()
-    {
-        parent::tearDown();
-
-        Utility::sResetArticles();
     }
 }

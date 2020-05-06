@@ -4,7 +4,6 @@
     xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
     xsi:schemaLocation="http://symfony.com/schema/dic/services http://symfony.com/schema/dic/services/services-1.0.xsd"
 >
-
     <parameters>
         <parameter key="fin_search_unified.view_dir">%fin_search_unified.plugin_dir%/Resources/views</parameter>
     </parameters>
@@ -13,6 +12,12 @@
         <service id="fin_search_unified.subscriber.frontend" class="FinSearchUnified\Subscriber\Frontend">
             <argument>%fin_search_unified.plugin_dir%</argument>
             <argument type="service" id="template" />
+            <tag name="shopware.event_subscriber" />
+        </service>
+
+        <service id="fin_search_unified.subscriber.clear_cache" class="FinSearchUnified\Subscriber\CacheSubscriber">
+            <argument>%fin_search_unified.plugin_name%</argument>
+            <argument type="service" id="shopware.cache_manager" />
             <tag name="shopware.event_subscriber" />
         </service>
 
@@ -32,18 +37,25 @@
         </service>
 
         <service
-            id="fin_search_unified.custom_listing_hydrator"
             class="FinSearchUnified\Bundle\StoreFrontBundle\Gateway\Findologic\Hydrator\CustomListingHydrator"
-        />
+            id="fin_search_unified.custom_listing_hydrator"
+        >
+            <argument id="fin_search_unified.config_loader" type="service" />
+        </service>
 
         <service
-            decorates="shopware_storefront.custom_facet_gateway"
             class="FinSearchUnified\Bundle\StoreFrontBundle\Gateway\Findologic\CustomFacetGateway"
-            id="FinSearchUnified.findologic_facet_gateway"
+            id="fin_search_unified.findologic_facet_gateway"
         >
-            <argument type="service" id="FinSearchUnified.findologic_facet_gateway.inner" />
             <argument type="service" id="fin_search_unified.custom_listing_hydrator" />
             <argument type="service" id="fin_search_unified.query_builder_factory" />
+        </service>
+
+        <service
+            class="FinSearchUnified\Bundle\StoreFrontBundle\Service\Core\CustomFacetService"
+            id="fin_search_unified.custom_facet_service"
+        >
+            <argument type="service" id="fin_search_unified.findologic_facet_gateway" />
         </service>
 
         <service id="fin_search_unified.shopware_process" class="FinSearchUnified\ShopwareProcess">
@@ -64,7 +76,15 @@
         </service>
 
         <service
-            id="FinSearchUnified.color_picker_facet_result"
+            id="fin_search_unified.findologic_facet_criteria_request_handler"
+            class="FinSearchUnified\Bundle\SearchBundle\CriteriaRequestHandler\FindologicFacetCriteriaRequestHandler"
+        >
+            <argument type="service" id="fin_search_unified.custom_facet_service" />
+            <tag name="criteria_request_handler" />
+        </service>
+
+        <service
+            id="fin_search_unified.color_picker_facet_result"
             class="FinSearchUnified\Bundle\FacetResult\ColorPickerFacetResult"
         />
 
@@ -72,10 +92,11 @@
             id="fin_search_unified.product_number_search"
             class="FinSearchUnified\Bundle\ProductNumberSearch"
             decorates="shopware_search.product_number_search"
-            public="false"
+            public="true"
         >
             <argument type="service" id="fin_search_unified.product_number_search.inner" />
             <argument type="service" id="fin_search_unified.query_builder_factory" />
+            <argument type="service" id="cache" />
         </service>
 
         <service
@@ -86,6 +107,7 @@
         >
             <argument type="service" id="fin_search_unified_es.product_number_search.inner" />
             <argument type="service" id="fin_search_unified.query_builder_factory" />
+            <argument type="service" id="cache" />
         </service>
 
         <service id="fin_search_unified.commands.export_command" class="FinSearchUnified\Commands\ExportCommand">
@@ -95,7 +117,8 @@
         <service
             id="fin_search_unified.product_search"
             class="Shopware\Bundle\SearchBundle\ProductSearch"
-            decorates="shopware_search.product_search">
+            decorates="shopware_search.product_search"
+        >
             <argument type="service" id="shopware_storefront.list_product_service" />
             <argument type="service" id="fin_search_unified.product_number_search" />
         </service>
@@ -108,6 +131,7 @@
             <argument type="service" id="shopware_search.store_front_criteria_factory" />
             <argument type="service" id="fin_search_unified.product_stream.criteria_factory.inner" />
         </service>
+
         <service
             id="fin_search_unified.product_stream.repository"
             class="FinSearchUnified\Components\ProductStream\Repository"
@@ -127,6 +151,8 @@
 
         <service id="fin_search_unified.subscriber.widgets" class="FinSearchUnified\Subscriber\Widgets">
             <tag name="shopware.event_subscriber" />
+            <argument id="cache" type="service" />
+            <argument id="shopware.routing.matchers.rewrite_matcher" type="service" />
         </service>
 
         <service class="FinSearchUnified\Components\ConfigLoader" id="fin_search_unified.config_loader">
@@ -134,6 +160,17 @@
             <argument id="http_client" type="service" />
             <argument id="config" type="service" />
         </service>
+
+        <service class="FinSearchUnified\Components\Environment" id="fin_search_unified.environment" />
+
+        <!-- Re-declare non-existent shopware services in our xml for backward compatibility -->
+        <service id="shopware.routing.matchers.rewrite_matcher"
+            class="Shopware\Components\Routing\Matchers\RewriteMatcher">
+            <argument type="service" id="dbal_connection" />
+            <argument type="service" id="query_alias_mapper" />
+            <tag name="router.matcher" priority="50" />
+        </service>
+        <!-- Shopware services re-declaration ends here -->
 
     </services>
 </container>
